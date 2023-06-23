@@ -4,7 +4,7 @@ const print = std.debug.print;
 
 const CAPACITY = 14;
 const DESIRED_CAP = CAPACITY - 2;
-const FULL_MASK = ((1 << DESIRED_CAP) - 1);
+const FULL_MASK = ((1 << CAPACITY) - 1);
 
 fn last_set_idx_nonzero(mask: u32) u32 {
     return (1 + (31 ^ @clz(mask)));
