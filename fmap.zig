@@ -411,8 +411,52 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
 
         const Self = @This();
 
-        fn reset(self: *Self) void {
-            _ = self;
+        fn is_empty(self: *Self) bool {
+            return self.chunk_ptr == @ptrCast(chunk_ptr_type, &S.empty_chunk);
+        }
+
+        fn chunk_count(self: *Self) u32 {
+            return self.chunk_mask + 1;
+        }
+
+        fn resetAndShrink(self: *Self, allocator: Allocator) void {
+            var orig_chunk = self.chunk_ptr[0..self.chunk_count()];
+            self.chunk_ptr = @ptrCast(chunk_ptr_type, &S.empty_chunk);
+            self.size = 0;
+            self.chunk_mask = 0;
+
+            allocator.free(orig_chunk);
+        }
+
+        fn deinit(self: *Self, allocator: Allocator) void {
+            self.reset(allocator, true);
+        }
+
+        fn resetInplace(self: *Self) void {
+            // do not change chunk_mask and chunk_ptr
+            // clear all the tag.
+            var chunks = self.chunk_ptr;
+            const scale = chunks[0].head.get_scale();
+
+            for (0..self.chunk_count()) |idx| {
+                var chunk = &chunks[idx];
+                chunk.head.clear();
+            }
+            chunks[0].head.mark_eof(scale);
+            self.size = 0;
+        }
+
+        fn reset(self: *Self, allocator: Allocator, comptime free: bool) void {
+            if (self.is_empty())
+                return;
+
+            if (free or self.chunk_count() > 16) {
+                self.resetAndShrink(allocator);
+                return;
+            }
+
+            // keep the size
+            self.resetInplace();
         }
 
         fn new(cap: usize, allocator: Allocator) !Self {
@@ -478,7 +522,7 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
         }
 
         fn rehash(self: *Self, orig: fmap_cap, new_cap: fmap_cap, allocator: Allocator) !void {
-            var new_chunks = try allocator.alloc(chunk_type, compute_capacity(new_cap));
+            var new_chunks = try allocator.alloc(chunk_type, new_cap.chunk_count);
             var orig_chunks = self.chunk_ptr;
             defer {
                 // if orig fmap is an empty map, its scale is zero, so its capacity is
@@ -554,7 +598,7 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
         fn reserve(self: *Self, cap: usize, allocator: Allocator) !void {
             const desired = @intCast(u32, @max(self.size, cap));
             if (desired == 0) {
-                self.reset();
+                self.reset(allocator, true);
                 return;
             }
 
@@ -627,6 +671,10 @@ test {
 
     var map = try fmap(itemType, hasher).new(0, allocator);
     try testing.expect(map.chunk_mask == 0);
+    map.deinit(allocator);
+
+    const status = gpa.deinit();
+    try testing.expect(status != .leak);
 }
 
 test {
@@ -638,4 +686,8 @@ test {
 
     var map = try fmap(itemType, hasher).new(100, allocator);
     try testing.expect(map.chunk_mask == 15);
+    map.deinit(allocator);
+
+    const status = gpa.deinit();
+    try testing.expect(status != .leak);
 }
