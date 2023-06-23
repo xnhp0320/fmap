@@ -500,7 +500,7 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
 
         fn alloc_tag(self: *Self, fullness: [*]u8, hp: hash_pair) item_iter_type {
             var index = hp.hash;
-            var delta = hp.probe_delta();
+            const delta = hp.probe_delta();
             var hostedOp: u8 = 0;
             var chunk: *chunk_type = undefined;
 
@@ -620,6 +620,98 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
                 try self.rehash(orig, new_cap, allocator);
             }
         }
+
+        fn findImpl(self: *Self, hp: hash_pair, item: *item_type, comptime prefetch: bool) item_iter_type {
+            var index = hp.hash;
+            var tries: usize = 0;
+            const step = hp.probe_delta();
+
+            while (tries <= self.chunk_mask) : (tries += 1) {
+                var chunk = &self.chunk_ptr[index & self.chunk_mask];
+                if (prefetch) {
+                    @prefetch(&chunk.items, .{});
+                }
+
+                var iter = match_iter.new(chunk.head, @intCast(u8, hp.tag));
+                while (iter.has_next()) {
+                    var idx = iter.next();
+                    if (item.keyEql(&chunk.items[idx])) {
+                        return item_iter_type.new(chunk, idx);
+                    }
+                }
+
+                if (chunk.head.overflow_count() == 0) {
+                    break;
+                }
+                index += step;
+            }
+
+            return item_iter_type{ .item = null, .index = 0 };
+        }
+
+        fn find(self: *Self, item: *item_type) item_iter_type {
+            var hp = hasher.hash(item.getKey());
+            return self.findImpl(hp, item, true);
+        }
+
+        fn get_scale(self: *Self) u32 {
+            return self.chunk_ptr[0].head.get_scale();
+        }
+
+        fn reserveForInsertImpl(self: *Self, cap_minus_one: u32, orig_chunk_count: u32, scale: u32, cap: u32, allocator: Allocator) !void {
+            const needed_cap = cap_minus_one + 1;
+            const min_growth = cap + (cap >> 2) + (cap >> 3) + (cap >> 5);
+
+            const desired = @max(needed_cap, min_growth);
+            const new_cap = compute(desired);
+            try self.rehash(.{ .chunk_count = orig_chunk_count, .scale = scale }, new_cap, allocator);
+        }
+
+        fn reserve_for_insert(self: *Self, incoming: u32, allocator: Allocator) !void {
+            const needed = self.size + incoming;
+            const scale = self.get_scale();
+            const existing_cap = compute_capacity(.{ .chunk_count = self.chunk_count(), .scale = scale });
+
+            if (needed - 1 >= existing_cap) {
+                try self.reserveForInsertImpl(needed - 1, self.chunk_count(), scale, existing_cap, allocator);
+            }
+        }
+
+        fn insert(self: *Self, item: *item_type, allocator: Allocator) !void {
+            var hp = hasher.hash(item.getKey());
+            if (self.size > 0) {
+                // check if the key exists?
+                const iter = self.findImpl(hp, item, true);
+                if (!iter.at_end()) {
+                    return error.ItemExist;
+                }
+            }
+
+            try self.reserve_for_insert(1, allocator);
+
+            var index = hp.hash;
+            var chunk = &self.chunk_ptr[index & self.chunk_mask];
+            var idx_or_null = chunk.head.first_empty_idx();
+
+            if (idx_or_null == null) {
+                const delta = hp.probe_delta();
+                while (true) {
+                    chunk.head.inc_overflow_count();
+                    index += delta;
+                    chunk = &self.chunk_ptr[index & self.chunk_mask];
+
+                    idx_or_null = chunk.head.first_empty_idx();
+                    if (idx_or_null != null) {
+                        break;
+                    }
+                }
+            }
+
+            chunk.head.set_tag(idx_or_null.?, hp.tag);
+            chunk.items[idx_or_null.?] = item.*;
+
+            self.size += 1;
+        }
     };
 }
 
@@ -627,7 +719,7 @@ fn getHasher(comptime K: type) type {
     return struct {
         fn hash(key: K) hash_pair {
             var hv = std.hash.Wyhash.hash(0, std.mem.asBytes(&key));
-            return hash_pair.from_hash(@intCast(u32, hv));
+            return hash_pair.from_hash(@truncate(u32, hv));
         }
     };
 }
@@ -659,6 +751,10 @@ fn getItemTypeKeyOnly(comptime Key: type) type {
         fn getKey(self: @This()) Key {
             return self.key;
         }
+
+        fn keyEql(self: @This(), other: *@This()) bool {
+            return std.meta.eql(self.getKey(), other.getKey());
+        }
     };
 }
 
@@ -686,6 +782,26 @@ test {
 
     var map = try fmap(itemType, hasher).new(100, allocator);
     try testing.expect(map.chunk_mask == 15);
+    map.deinit(allocator);
+
+    const status = gpa.deinit();
+    try testing.expect(status != .leak);
+}
+
+test {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+
+    const itemType = getItemTypeKeyOnly(u64);
+    const hasher = getHasher(itemType.keyType);
+
+    var map = try fmap(itemType, hasher).new(0, allocator);
+
+    var item = itemType{ .key = 1 };
+    try map.insert(&item, allocator);
+    const iter = map.find(&item);
+    try testing.expect(!iter.at_end());
+    try testing.expect(iter.index == 0);
     map.deinit(allocator);
 
     const status = gpa.deinit();
