@@ -116,109 +116,6 @@ fn fmap_chunk(comptime item_type: type) type {
     };
 }
 
-const hash_pair = struct {
-    hash: u32,
-    tag: u32,
-};
-
-const Allocator = std.mem.Allocator;
-
-fn fmap(comptime item_type: type, allocator: Allocator) type {
-    const chunk_type = fmap_chunk(item_type);
-    const chunk_ptr_type = [*]chunk_type;
-    const S = struct {
-        var empty_chunk = std.mem.zeroInit(chunk_type, .{});
-    };
-
-    return struct {
-        chunk_ptr: ?chunk_ptr_type,
-        chunk_mask: u32,
-        size: u32,
-        flags: u32,
-
-        const Self = @This();
-
-        fn new(cap: usize) Self {
-            var self: Self = .{ .chunk_ptr = &S.empty_chunk, .chunk_mask = 0, .size = 0, .flags = 0 };
-            if (cap == 0)
-                return fmap;
-
-            self.reserve(cap);
-            return self;
-        }
-
-        const fmap_cap = struct {
-            chunk_count: u32,
-            scale: u32,
-        };
-
-        fn compute_capacity(cap: fmap_cap) u32 {
-            return cap.chunk_count * cap.scale;
-        }
-
-        fn compute(desired: u32) fmap_cap {
-            var minChunks = (desired - 1) / DESIRED_CAP + 1;
-            var chunkPow = find_last_set(minChunks - 1);
-
-            return .{ .chunk_count = @bitCast(u32, 1) << chunkPow, .scale = DESIRED_CAP };
-        }
-
-        fn init_chunks(chunks: []chunk_type, cap: fmap_cap) chunk_ptr_type {
-            for (0..cap.chunk_count) |idx| {
-                var h = &chunks[idx].head;
-                h.clear();
-            }
-
-            var h = &chunks[0].head;
-            h.mark_eof(cap.scale);
-            return chunks.ptr;
-        }
-
-        fn rehash(self: *Self, orig: fmap_cap, new_cap: fmap_cap) void {
-            var chunks = try allocator.alloc(fmap_chunk(item_type), compute_capacity(new_cap));
-            var orig_chunks = self.chunk_ptr.?[0..orig.chunk_count];
-
-            self.chunk_ptr = init_chunks(chunks, new_cap);
-            self.chunk_mask = new.chunk_count - 1;
-            if (self.size == 0) {
-                allocator.free(orig_chunks);
-            } else if (orig.chunk_count == 1 and new_cap.chunk_count == 1) {}
-        }
-
-        fn reserve(self: *Self, cap: usize) void {
-            const desired = @max(self.size, cap);
-            if (desired == 0) {
-                self.reset();
-            }
-
-            const h = self.chunk_ptr[0];
-            const orig = fmap_cap{ .chunk_count = self.chunk_mask + 1, .scale = h.get_scale() };
-
-            const orig_cap = compute_capacity(orig);
-
-            if (desired <= orig_cap and
-                desired >= orig_cap - orig_cap / 8)
-            {
-                return;
-            }
-
-            const new_cap = compute_capacity(compute(desired));
-
-            if (new_cap != orig_cap) {
-                self.rehash(orig_cap, new_cap);
-            }
-        }
-    };
-}
-
-fn fmap_probe_delta(hp: hash_pair) u32 {
-    return 2 * hp.tag + 1;
-}
-
-fn fmap_split_hash(hash: u32) hash_pair {
-    return .{ hash, ((hash >> 24) | 0x80) };
-}
-
 test {
     var h = fmap_chunk_head.new();
     try testing.expect(@TypeOf(h) == fmap_chunk_head);
@@ -408,7 +305,7 @@ fn item_iter(comptime item_type: type) type {
             return iter.item == null;
         }
 
-        fn advanceImpl(self: *iter_type, comptime check_oef: bool, comptime likely_dead: bool) void {
+        inline fn advanceImpl(self: *iter_type, comptime check_oef: bool, comptime likely_dead: bool) void {
             var chunk = self.to_chunk();
             const h = &chunk[0].head;
             while (self.index > 0) {
@@ -481,4 +378,264 @@ test {
     }
 
     try testing.expect(idx == 58);
+}
+
+const hash_pair = struct {
+    hash: u32,
+    tag: u32,
+
+    fn probe_delta(self: @This()) u32 {
+        return 2 * self.tag + 1;
+    }
+
+    fn from_hash(hash: u32) @This() {
+        return .{ .hash = hash, .tag = ((hash >> 24) | 0x80) };
+    }
+};
+
+const Allocator = std.mem.Allocator;
+
+fn fmap(comptime item_type: type, comptime hasher: type) type {
+    const chunk_type = fmap_chunk(item_type);
+    const chunk_ptr_type = [*]chunk_type;
+    const item_iter_type = item_iter(item_type);
+    const S = struct {
+        var empty_chunk = std.mem.zeroes(chunk_type);
+    };
+
+    return struct {
+        chunk_ptr: chunk_ptr_type,
+        chunk_mask: u32,
+        size: u32,
+        flags: u32,
+
+        const Self = @This();
+
+        fn reset(self: *Self) void {
+            _ = self;
+        }
+
+        fn new(cap: usize, allocator: Allocator) !Self {
+            var map = Self{ .chunk_ptr = @ptrCast(chunk_ptr_type, &S.empty_chunk), .chunk_mask = 0, .size = 0, .flags = 0 };
+            if (cap == 0)
+                return map;
+
+            try map.reserve(cap, allocator);
+            return map;
+        }
+
+        const fmap_cap = struct {
+            chunk_count: u32,
+            scale: u32,
+        };
+
+        fn compute_capacity(cap: fmap_cap) u32 {
+            return cap.chunk_count * cap.scale;
+        }
+
+        fn compute(desired: u32) fmap_cap {
+            var minChunks = (desired - 1) / DESIRED_CAP + 1;
+            var chunkPow = @intCast(u5, find_last_set(minChunks - 1));
+
+            return .{ .chunk_count = @intCast(u32, 1) << chunkPow, .scale = DESIRED_CAP };
+        }
+
+        fn init_chunks(chunks: []chunk_type, cap: fmap_cap) chunk_ptr_type {
+            for (0..cap.chunk_count) |idx| {
+                var h = &chunks[idx].head;
+                h.clear();
+            }
+
+            var h = &chunks[0].head;
+            h.mark_eof(cap.scale);
+            return chunks.ptr;
+        }
+
+        const HOSTED_OVERFLOW_INC = @intCast(u8, 0x10);
+        const HOSTED_OVERFLOW_DEC = @intCast(u8, -0x10);
+
+        fn alloc_tag(self: *Self, fullness: [*]u8, hp: hash_pair) item_iter_type {
+            var index = hp.hash;
+            var delta = hp.probe_delta();
+            var hostedOp: u8 = 0;
+            var chunk: *chunk_type = undefined;
+
+            while (true) {
+                index &= self.chunk_mask;
+                chunk = &self.chunk_ptr[index];
+                if (fullness[index] < CAPACITY)
+                    break;
+                chunk.head.inc_overflow_count();
+                hostedOp = HOSTED_OVERFLOW_INC;
+                index += delta;
+            }
+
+            var item_idx = fullness[index];
+            fullness[index] += 1;
+            chunk.head.set_tag(item_idx, hp.tag);
+            chunk.head.adj_hosted_overflow_count(hostedOp);
+            return item_iter_type.new(chunk, item_idx);
+        }
+
+        fn rehash(self: *Self, orig: fmap_cap, new_cap: fmap_cap, allocator: Allocator) !void {
+            var new_chunks = try allocator.alloc(chunk_type, compute_capacity(new_cap));
+            var orig_chunks = self.chunk_ptr;
+            defer {
+                // if orig fmap is an empty map, its scale is zero, so its capacity is
+                // 0 too.
+                if (compute_capacity(orig) > 0)
+                    allocator.free(orig_chunks[0..orig.chunk_count]);
+            }
+
+            self.chunk_ptr = init_chunks(new_chunks, new_cap);
+            self.chunk_mask = new_cap.chunk_count - 1;
+
+            if (self.size == 0) {
+                return;
+            } else if (orig.chunk_count == 1 and new_cap.chunk_count == 1) {
+                var src_idx: usize = 0;
+                var dst_idx: usize = 0;
+                var src_chunk = orig_chunks[0];
+                var dst_chunk = new_chunks.ptr[0];
+
+                while (dst_idx < self.size) {
+                    // bring scattered items into dense items.
+                    if (src_chunk.head.idx_used(src_idx)) {
+                        dst_chunk.head.set_tag(dst_idx, src_chunk.head.get_tag(src_idx));
+                        dst_chunk.items[dst_idx] = src_chunk.items[src_idx];
+                        dst_idx += 1;
+                    }
+                    src_idx += 1;
+                }
+            } else {
+                var stack_buf: [256]u8 = undefined;
+                @memset(&stack_buf, 0);
+                var fullness: [*]u8 = &stack_buf;
+
+                if (new_cap.chunk_count > 256) {
+                    var mem = try allocator.alloc(u8, new_cap.chunk_count);
+                    @memset(mem, 0);
+                    fullness = mem.ptr;
+                }
+
+                defer {
+                    if (fullness != &stack_buf) {
+                        allocator.free(fullness[0..new_cap.chunk_count]);
+                    }
+                }
+
+                //rehash from bottom
+                var src_chunks = orig_chunks + orig.chunk_count - 1;
+                var remaining = self.size;
+                while (remaining > 0) {
+                    var src_chunk = src_chunks[0];
+                    var iter = dense_iter.from_chunk_head(src_chunk.head);
+
+                    // prefetch all items here
+                    var prefetch_iter = iter;
+                    while (prefetch_iter.has_next()) {
+                        @prefetch(&src_chunk.items[prefetch_iter.next()], .{});
+                    }
+
+                    // begin rehash
+                    while (iter.has_next()) {
+                        remaining -= 1;
+                        const src_idx = iter.next();
+                        const src_item = &src_chunk.items[src_idx];
+                        const hp = hasher.hash(src_item.getKey());
+                        var itemIter = self.alloc_tag(fullness, hp);
+                        itemIter.item.? = @ptrCast([*]item_type, src_item);
+                    }
+                    src_chunks -= 1;
+                }
+            }
+        }
+
+        fn reserve(self: *Self, cap: usize, allocator: Allocator) !void {
+            const desired = @intCast(u32, @max(self.size, cap));
+            if (desired == 0) {
+                self.reset();
+                return;
+            }
+
+            const h = self.chunk_ptr[0].head;
+            const orig = fmap_cap{ .chunk_count = self.chunk_mask + 1, .scale = h.get_scale() };
+
+            const orig_size = compute_capacity(orig);
+
+            if (desired <= orig_size and
+                desired >= orig_size - orig_size / 8)
+            {
+                return;
+            }
+
+            const new_cap = compute(desired);
+            const new_size = compute_capacity(new_cap);
+
+            if (new_size != orig_size) {
+                try self.rehash(orig, new_cap, allocator);
+            }
+        }
+    };
+}
+
+fn getHasher(comptime K: type) type {
+    return struct {
+        fn hash(key: K) hash_pair {
+            var hv = std.hash.Wyhash.hash(0, std.mem.asBytes(&key));
+            return hash_pair.from_hash(@intCast(u32, hv));
+        }
+    };
+}
+
+fn getItemTypeKeyValue(comptime Key: type, comptime Value: type) type {
+    return extern struct {
+        key: Key,
+        value: Value,
+
+        const keyType = Key;
+        const valueType = Value;
+
+        fn getKey(self: @This()) Key {
+            return self.key;
+        }
+
+        fn getValue(self: @This()) *Value {
+            return &self.value;
+        }
+    };
+}
+
+fn getItemTypeKeyOnly(comptime Key: type) type {
+    return extern struct {
+        key: Key,
+
+        const keyType = Key;
+
+        fn getKey(self: @This()) Key {
+            return self.key;
+        }
+    };
+}
+
+test {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+
+    const itemType = getItemTypeKeyOnly(u64);
+    const hasher = getHasher(itemType.keyType);
+
+    var map = try fmap(itemType, hasher).new(0, allocator);
+    try testing.expect(map.chunk_mask == 0);
+}
+
+test {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+
+    const itemType = getItemTypeKeyOnly(u64);
+    const hasher = getHasher(itemType.keyType);
+
+    var map = try fmap(itemType, hasher).new(100, allocator);
+    try testing.expect(map.chunk_mask == 15);
 }
