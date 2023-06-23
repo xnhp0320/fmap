@@ -156,7 +156,8 @@ const dense_iter = struct {
     fn from_chunk_head(h: fmap_chunk_head) Self {
         return new(h.occupied_mask());
     }
-    fn next(iter: *Self) u16 {
+
+    fn next(iter: *Self) ?u16 {
         if ((iter.mask & 1) != 0) {
             iter.mask >>= 1;
             return blk: {
@@ -165,6 +166,9 @@ const dense_iter = struct {
                 break :blk index;
             };
         } else {
+            if (iter.mask == 0)
+                return null;
+
             const s = @ctz(iter.mask);
             const idx = iter.index + s;
             const mask: u32 = iter.mask;
@@ -186,12 +190,10 @@ test {
 
     try testing.expect(iter.has_next() == true);
 
-    var idx: u16 = 0;
     var expect_idx: u16 = 0;
     const expects = [_]u16{ 0, 1, 3 };
 
-    while (iter.has_next()) {
-        idx = iter.next();
+    while (iter.next()) |idx| {
         try testing.expect(idx == expects[expect_idx]);
         expect_idx += 1;
     }
@@ -207,12 +209,10 @@ test {
     var iter = dense_iter.from_chunk_head(h);
     try testing.expect(iter.has_next() == true);
 
-    var idx: u16 = 0;
     var expect_idx: u16 = 0;
     const expects = [_]u16{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11 };
 
-    while (iter.has_next()) {
-        idx = iter.next();
+    while (iter.next()) |idx| {
         try testing.expect(idx == expects[expect_idx]);
         expect_idx += 1;
     }
@@ -233,7 +233,10 @@ const match_iter = struct {
         return iter.mask != 0;
     }
 
-    fn next(iter: *self) u16 {
+    fn next(iter: *self) ?u16 {
+        if (!iter.has_next())
+            return null;
+
         var idx = @ctz(iter.mask);
         iter.mask &= (iter.mask - 1);
         return idx;
@@ -250,12 +253,10 @@ test {
     var iter = match_iter.new(h, 1);
     try testing.expect(iter.has_next() == true);
 
-    var idx: u16 = 0;
     var expect_idx: u16 = 0;
     const expects = [_]u16{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11 };
 
-    while (iter.has_next()) {
-        idx = iter.next();
+    while (iter.next()) |idx| {
         try testing.expect(idx == expects[expect_idx]);
         expect_idx += 1;
     }
@@ -271,12 +272,10 @@ test {
     var iter = match_iter.new(h, 1);
     try testing.expect(iter.has_next() == true);
 
-    var idx: u16 = 0;
     var expect_idx: u16 = 0;
     const expects = [_]u16{ 0, 3 };
 
-    while (iter.has_next()) {
-        idx = iter.next();
+    while (iter.next()) |idx| {
         try testing.expect(idx == expects[expect_idx]);
         expect_idx += 1;
     }
@@ -577,14 +576,13 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
 
                     // prefetch all items here
                     var prefetch_iter = iter;
-                    while (prefetch_iter.has_next()) {
-                        @prefetch(&src_chunk.items[prefetch_iter.next()], .{});
+                    while (prefetch_iter.next()) |idx| {
+                        @prefetch(&src_chunk.items[idx], .{});
                     }
 
                     // begin rehash
-                    while (iter.has_next()) {
+                    while (iter.next()) |src_idx| {
                         remaining -= 1;
-                        const src_idx = iter.next();
                         const src_item = &src_chunk.items[src_idx];
                         const hp = hasher.hash(src_item.getKey());
                         var itemIter = self.alloc_tag(fullness, hp);
@@ -633,8 +631,7 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
                 }
 
                 var iter = match_iter.new(chunk.head, @intCast(u8, hp.tag));
-                while (iter.has_next()) {
-                    var idx = iter.next();
+                while (iter.next()) |idx| {
                     if (item.keyEql(&chunk.items[idx])) {
                         return item_iter_type.new(chunk, idx);
                     }
