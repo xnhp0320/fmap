@@ -16,7 +16,7 @@ fn find_last_set(val: u32) u32 {
 
 const fmap_chunk_head = extern struct {
     tags: [14]u8,
-    control: u8,
+    control: i8,
     overflow: u8,
     const Self = @This();
 
@@ -29,7 +29,7 @@ const fmap_chunk_head = extern struct {
     }
 
     fn mark_eof(h: *Self, scale: u32) void {
-        h.control = ((h.control & ~@intCast(u8, 0x0f) | @intCast(u8, scale)));
+        h.control = ((h.control & ~@intCast(i8, 0x0f) | @intCast(i8, scale)));
     }
 
     fn get_scale(h: Self) u32 {
@@ -44,7 +44,7 @@ const fmap_chunk_head = extern struct {
         h.tags[idx] = @intCast(u8, tag);
     }
 
-    fn clear_tag(h: *Self, idx: u32) void {
+    fn clear_tag(h: *Self, idx: usize) void {
         h.tags[idx] = @intCast(u8, 0);
     }
 
@@ -52,7 +52,7 @@ const fmap_chunk_head = extern struct {
         return @intCast(u32, h.control >> 4);
     }
 
-    fn adj_hosted_overflow_count(h: *Self, hostedOp: u8) void {
+    fn adj_hosted_overflow_count(h: *Self, hostedOp: i8) void {
         h.control += hostedOp;
     }
 
@@ -306,7 +306,7 @@ fn item_iter(comptime item_type: type) type {
 
         inline fn advanceImpl(self: *iter_type, comptime check_oef: bool, comptime likely_dead: bool) void {
             var chunk = self.to_chunk();
-            const h = &chunk[0].head;
+            var h = &chunk[0].head;
             while (self.index > 0) {
                 self.index -= 1;
                 self.item = self.item.? - 1;
@@ -322,6 +322,7 @@ fn item_iter(comptime item_type: type) type {
                     }
                 }
                 chunk -= 1;
+                h = &chunk[0].head;
 
                 if (check_oef and !likely_dead) {
                     @prefetch(chunk - 1, .{});
@@ -494,13 +495,13 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
             return chunks.ptr;
         }
 
-        const HOSTED_OVERFLOW_INC = @intCast(u8, 0x10);
-        const HOSTED_OVERFLOW_DEC = @intCast(u8, -0x10);
+        const HOSTED_OVERFLOW_INC = @intCast(i8, 0x10);
+        const HOSTED_OVERFLOW_DEC = @intCast(i8, -0x10);
 
-        fn alloc_tag(self: *Self, fullness: [*]u8, hp: hash_pair) item_iter_type {
+        fn alloc_tag(self: *Self, fullness: [*]u8, hp: hash_pair) *item_type {
             var index = hp.hash;
             const delta = hp.probe_delta();
-            var hostedOp: u8 = 0;
+            var hostedOp: i8 = 0;
             var chunk: *chunk_type = undefined;
 
             while (true) {
@@ -513,11 +514,52 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
                 index += delta;
             }
 
-            var item_idx = fullness[index];
+            const item_idx = fullness[index];
             fullness[index] += 1;
             chunk.head.set_tag(item_idx, hp.tag);
             chunk.head.adj_hosted_overflow_count(hostedOp);
-            return item_iter_type.new(chunk, item_idx);
+            return &chunk.items[item_idx];
+        }
+
+        fn erase(itemIter: *item_iter_type) void {
+            var chunk = itemIter.to_chunk()[0];
+            chunk.head.clear_tag(itemIter.index);
+        }
+
+        fn eraseWithOverflow(self: *Self, itemIter: *item_iter_type, hp: hash_pair) void {
+            var hostedOp: i8 = 0;
+            var index = hp.hash;
+            const delta = hp.probe_delta();
+            const chunk = &itemIter.to_chunk()[0];
+
+            while (true) {
+                var chunk_ = &self.chunk_ptr[index & self.chunk_mask];
+                if (chunk == chunk_) {
+                    chunk_.head.clear_tag(itemIter.index);
+                    chunk_.head.adj_hosted_overflow_count(hostedOp);
+                    break;
+                }
+
+                chunk_.head.dec_overflow_count();
+                hostedOp = HOSTED_OVERFLOW_DEC;
+                index += delta;
+            }
+        }
+
+        fn remove(self: *Self, itemIter: *item_iter_type) void {
+            var chunk_ptr = itemIter.to_chunk();
+            var chunk = &chunk_ptr[0];
+
+            if (chunk.head.hosted_overflow_count() != 0) {
+                const item = itemIter.item.?[0];
+                const hp = hasher.hash(item.getKey());
+                self.eraseWithOverflow(itemIter, hp);
+            } else {
+                erase(itemIter);
+            }
+
+            self.size -= 1;
+            itemIter.advance_likely_dead();
         }
 
         fn rehash(self: *Self, orig: fmap_cap, new_cap: fmap_cap, allocator: Allocator) !void {
@@ -585,8 +627,8 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
                         remaining -= 1;
                         const src_item = &src_chunk.items[src_idx];
                         const hp = hasher.hash(src_item.getKey());
-                        var itemIter = self.alloc_tag(fullness, hp);
-                        itemIter.item.? = @ptrCast([*]item_type, src_item);
+                        const item_ptr = self.alloc_tag(fullness, hp);
+                        item_ptr.* = src_item.*;
                     }
                     src_chunks -= 1;
                 }
@@ -619,13 +661,13 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
             }
         }
 
-        fn findImpl(self: *Self, hp: hash_pair, item: *item_type, comptime prefetch: bool) item_iter_type {
+        fn findImpl(self: *Self, hp: hash_pair, item: *const item_type, comptime prefetch: bool) item_iter_type {
             var index = hp.hash;
             var tries: usize = 0;
             const step = hp.probe_delta();
 
             while (tries <= self.chunk_mask) : (tries += 1) {
-                var chunk = &self.chunk_ptr[index & self.chunk_mask];
+                const chunk = &self.chunk_ptr[index & self.chunk_mask];
                 if (prefetch) {
                     @prefetch(&chunk.items, .{});
                 }
@@ -646,8 +688,8 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
             return item_iter_type{ .item = null, .index = 0 };
         }
 
-        fn find(self: *Self, item: *item_type) item_iter_type {
-            var hp = hasher.hash(item.getKey());
+        fn find(self: *Self, item: *const item_type) item_iter_type {
+            const hp = hasher.hash(item.getKey());
             return self.findImpl(hp, item, true);
         }
 
@@ -655,13 +697,17 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
             return self.chunk_ptr[0].head.get_scale();
         }
 
-        fn reserveForInsertImpl(self: *Self, cap_minus_one: u32, orig_chunk_count: u32, scale: u32, cap: u32, allocator: Allocator) !void {
+        fn reserveForInsertImpl(self: *Self, cap_minus_one: u32, orig_cap: fmap_cap, cap: u32, allocator: Allocator) !void {
             const needed_cap = cap_minus_one + 1;
+
+            //we want to grow by between 2^0.5 and 2^1.5 ending at a "good"
+            // size, so we grow by 2^0.5 and then round up
+            // 1.01101_2 = 1.40625
             const min_growth = cap + (cap >> 2) + (cap >> 3) + (cap >> 5);
 
             const desired = @max(needed_cap, min_growth);
             const new_cap = compute(desired);
-            try self.rehash(.{ .chunk_count = orig_chunk_count, .scale = scale }, new_cap, allocator);
+            try self.rehash(orig_cap, new_cap, allocator);
         }
 
         fn reserve_for_insert(self: *Self, incoming: u32, allocator: Allocator) !void {
@@ -670,11 +716,11 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
             const existing_cap = compute_capacity(.{ .chunk_count = self.chunk_count(), .scale = scale });
 
             if (needed - 1 >= existing_cap) {
-                try self.reserveForInsertImpl(needed - 1, self.chunk_count(), scale, existing_cap, allocator);
+                try self.reserveForInsertImpl(needed - 1, .{ .chunk_count = self.chunk_count(), .scale = scale }, existing_cap, allocator);
             }
         }
 
-        fn insert(self: *Self, item: *item_type, allocator: Allocator) !void {
+        fn insert(self: *Self, item: *const item_type, allocator: Allocator) !void {
             var hp = hasher.hash(item.getKey());
             if (self.size > 0) {
                 // check if the key exists?
@@ -702,6 +748,7 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
                         break;
                     }
                 }
+                chunk.head.adj_hosted_overflow_count(HOSTED_OVERFLOW_INC);
             }
 
             chunk.head.set_tag(idx_or_null.?, hp.tag);
@@ -715,7 +762,7 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
 fn getHasher(comptime K: type) type {
     return struct {
         fn hash(key: K) hash_pair {
-            var hv = std.hash.Wyhash.hash(0, std.mem.asBytes(&key));
+            const hv = std.hash.Wyhash.hash(0, std.mem.asBytes(&key));
             return hash_pair.from_hash(@truncate(u32, hv));
         }
     };
@@ -794,11 +841,44 @@ test {
 
     var map = try fmap(itemType, hasher).new(0, allocator);
 
-    var item = itemType{ .key = 1 };
+    const item = itemType{ .key = 1 };
     try map.insert(&item, allocator);
-    const iter = map.find(&item);
+    var iter = map.find(&item);
     try testing.expect(!iter.at_end());
     try testing.expect(iter.index == 0);
+
+    map.remove(&iter);
+    try testing.expect(iter.at_end());
+
+    map.deinit(allocator);
+
+    const status = gpa.deinit();
+    try testing.expect(status != .leak);
+}
+
+test "fmap a large insert and remove" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+
+    const itemType = getItemTypeKeyOnly(u64);
+    const hasher = getHasher(itemType.keyType);
+
+    var map = try fmap(itemType, hasher).new(0, allocator);
+
+    for (0..1024) |idx| {
+        const item = itemType{ .key = idx };
+        try map.insert(&item, allocator);
+    }
+    try testing.expect(map.size == 1024);
+
+    for (0..1024) |idx| {
+        const item = itemType{ .key = idx };
+        var iter = map.find(&item);
+        try testing.expect(iter.item.?[0].key == idx);
+        try testing.expect(!iter.at_end());
+        map.remove(&iter);
+    }
+
     map.deinit(allocator);
 
     const status = gpa.deinit();
