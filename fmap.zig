@@ -420,7 +420,7 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
         }
 
         fn resetAndShrink(self: *Self, allocator: Allocator) void {
-            var orig_chunk = self.chunk_ptr[0..self.chunk_count()];
+            const orig_chunk = self.chunk_ptr[0..self.chunk_count()];
             self.chunk_ptr = @ptrCast(chunk_ptr_type, &S.empty_chunk);
             self.size = 0;
             self.chunk_mask = 0;
@@ -435,11 +435,11 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
         fn resetInplace(self: *Self) void {
             // do not change chunk_mask and chunk_ptr
             // clear all the tag.
-            var chunks = self.chunk_ptr;
+            const chunks = self.chunk_ptr;
             const scale = chunks[0].head.get_scale();
 
             for (0..self.chunk_count()) |idx| {
-                var chunk = &chunks[idx];
+                const chunk = &chunks[idx];
                 chunk.head.clear();
             }
             chunks[0].head.mark_eof(scale);
@@ -564,8 +564,8 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
         }
 
         fn rehash(self: *Self, orig: fmap_cap, new_cap: fmap_cap, allocator: Allocator) !void {
-            var new_chunks = try allocator.alloc(chunk_type, new_cap.chunk_count);
-            var orig_chunks = self.chunk_ptr;
+            const new_chunks = try allocator.alloc(chunk_type, new_cap.chunk_count);
+            const orig_chunks = self.chunk_ptr;
             defer {
                 // if orig fmap is an empty map, its scale is zero, so its capacity is
                 // 0 too.
@@ -581,8 +581,8 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
             } else if (orig.chunk_count == 1 and new_cap.chunk_count == 1) {
                 var src_idx: usize = 0;
                 var dst_idx: usize = 0;
-                var src_chunk = orig_chunks[0];
-                var dst_chunk = new_chunks.ptr[0];
+                const src_chunk = &orig_chunks[0];
+                const dst_chunk = &new_chunks.ptr[0];
 
                 while (dst_idx < self.size) {
                     // bring scattered items into dense items.
@@ -614,7 +614,7 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
                 var src_chunks = orig_chunks + orig.chunk_count - 1;
                 var remaining = self.size;
                 while (remaining > 0) {
-                    var src_chunk = src_chunks[0];
+                    const src_chunk = &src_chunks[0];
                     var iter = dense_iter.from_chunk_head(src_chunk.head);
 
                     // prefetch all items here
@@ -722,7 +722,7 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
         }
 
         fn insert(self: *Self, item: *const item_type, allocator: Allocator) !void {
-            var hp = hasher.hash(item.getKey());
+            const hp = hasher.hash(item.getKey());
             if (self.size > 0) {
                 // check if the key exists?
                 const iter = self.findImpl(hp, item, true);
