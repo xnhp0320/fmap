@@ -478,19 +478,19 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
         }
 
         fn compute(desired: u32) fmap_cap {
-            var minChunks = (desired - 1) / DESIRED_CAP + 1;
-            var chunkPow = @intCast(u5, find_last_set(minChunks - 1));
+            const minChunks = (desired - 1) / DESIRED_CAP + 1;
+            const chunkPow = @intCast(u5, find_last_set(minChunks - 1));
 
             return .{ .chunk_count = @intCast(u32, 1) << chunkPow, .scale = DESIRED_CAP };
         }
 
         fn init_chunks(chunks: []chunk_type, cap: fmap_cap) chunk_ptr_type {
             for (0..cap.chunk_count) |idx| {
-                var h = &chunks[idx].head;
+                const h = &chunks[idx].head;
                 h.clear();
             }
 
-            var h = &chunks[0].head;
+            const h = &chunks[0].head;
             h.mark_eof(cap.scale);
             return chunks.ptr;
         }
@@ -507,8 +507,9 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
             while (true) {
                 index &= self.chunk_mask;
                 chunk = &self.chunk_ptr[index];
-                if (fullness[index] < CAPACITY)
+                if (fullness[index] < CAPACITY) {
                     break;
+                }
                 chunk.head.inc_overflow_count();
                 hostedOp = HOSTED_OVERFLOW_INC;
                 index += delta;
@@ -522,7 +523,7 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
         }
 
         fn erase(itemIter: *item_iter_type) void {
-            var chunk = itemIter.to_chunk()[0];
+            const chunk = &itemIter.to_chunk()[0];
             chunk.head.clear_tag(itemIter.index);
         }
 
@@ -533,7 +534,7 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
             const chunk = &itemIter.to_chunk()[0];
 
             while (true) {
-                var chunk_ = &self.chunk_ptr[index & self.chunk_mask];
+                const chunk_ = &self.chunk_ptr[index & self.chunk_mask];
                 if (chunk == chunk_) {
                     chunk_.head.clear_tag(itemIter.index);
                     chunk_.head.adj_hosted_overflow_count(hostedOp);
@@ -547,8 +548,8 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
         }
 
         fn remove(self: *Self, itemIter: *item_iter_type) void {
-            var chunk_ptr = itemIter.to_chunk();
-            var chunk = &chunk_ptr[0];
+            const chunk_ptr = itemIter.to_chunk();
+            const chunk = &chunk_ptr[0];
 
             if (chunk.head.hosted_overflow_count() != 0) {
                 const item = itemIter.item.?[0];
@@ -877,7 +878,12 @@ test "fmap a large insert and remove" {
         try testing.expect(iter.item.?[0].key == idx);
         try testing.expect(!iter.at_end());
         map.remove(&iter);
+
+        if (idx == 1023) {
+            try testing.expect(iter.item == null);
+        }
     }
+    try testing.expect(map.size == 0);
 
     map.deinit(allocator);
 
