@@ -735,25 +735,22 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
 
             var index = hp.hash;
             var chunk = &self.chunk_ptr[index & self.chunk_mask];
-            var idx_or_null = chunk.head.first_empty_idx();
-
-            if (idx_or_null == null) {
+            const idx = chunk.head.first_empty_idx() orelse blk: {
                 const delta = hp.probe_delta();
                 while (true) {
                     chunk.head.inc_overflow_count();
                     index += delta;
                     chunk = &self.chunk_ptr[index & self.chunk_mask];
 
-                    idx_or_null = chunk.head.first_empty_idx();
-                    if (idx_or_null != null) {
-                        break;
+                    if (chunk.head.first_empty_idx()) |this_idx| {
+                        chunk.head.adj_hosted_overflow_count(HOSTED_OVERFLOW_INC);
+                        break :blk this_idx;
                     }
                 }
-                chunk.head.adj_hosted_overflow_count(HOSTED_OVERFLOW_INC);
-            }
+            };
 
-            chunk.head.set_tag(idx_or_null.?, hp.tag);
-            chunk.items[idx_or_null.?] = item.*;
+            chunk.head.set_tag(idx, hp.tag);
+            chunk.items[idx] = item.*;
 
             self.size += 1;
         }
