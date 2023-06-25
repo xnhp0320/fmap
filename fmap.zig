@@ -16,7 +16,7 @@ fn find_last_set(val: u32) u32 {
 
 const fmap_chunk_head = extern struct {
     tags: [14]u8,
-    control: i8,
+    control: u8,
     overflow: u8,
     const Self = @This();
 
@@ -29,7 +29,7 @@ const fmap_chunk_head = extern struct {
     }
 
     fn mark_eof(h: *Self, scale: u32) void {
-        h.control = ((h.control & ~@intCast(i8, 0x0f) | @intCast(i8, scale)));
+        h.control = ((h.control & ~@intCast(u8, 0x0f) | @intCast(u8, scale)));
     }
 
     fn get_scale(h: Self) u32 {
@@ -52,8 +52,8 @@ const fmap_chunk_head = extern struct {
         return @intCast(u32, h.control >> 4);
     }
 
-    fn adj_hosted_overflow_count(h: *Self, hostedOp: i8) void {
-        h.control += hostedOp;
+    fn adj_hosted_overflow_count(h: *Self, hostedOp: u8) void {
+        h.control +%= hostedOp;
     }
 
     fn inc_overflow_count(h: *Self) void {
@@ -486,22 +486,22 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
 
         fn init_chunks(chunks: []chunk_type, cap: fmap_cap) chunk_ptr_type {
             for (0..cap.chunk_count) |idx| {
-                const h = &chunks[idx].head;
-                h.clear();
+                const chunk = &chunks[idx];
+                chunk.head.clear();
             }
 
-            const h = &chunks[0].head;
-            h.mark_eof(cap.scale);
+            const chunk = &chunks[0];
+            chunk.head.mark_eof(cap.scale);
             return chunks.ptr;
         }
 
-        const HOSTED_OVERFLOW_INC = @intCast(i8, 0x10);
-        const HOSTED_OVERFLOW_DEC = @intCast(i8, -0x10);
+        const HOSTED_OVERFLOW_INC = @intCast(u8, 0x10);
+        const HOSTED_OVERFLOW_DEC = @bitCast(u8, @as(i8, -0x10));
 
         fn alloc_tag(self: *Self, fullness: [*]u8, hp: hash_pair) *item_type {
             var index = hp.hash;
             const delta = hp.probe_delta();
-            var hostedOp: i8 = 0;
+            var hostedOp: u8 = 0;
             var chunk: *chunk_type = undefined;
 
             while (true) {
@@ -528,7 +528,7 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
         }
 
         fn eraseWithOverflow(self: *Self, itemIter: *item_iter_type, hp: hash_pair) void {
-            var hostedOp: i8 = 0;
+            var hostedOp: u8 = 0;
             var index = hp.hash;
             const delta = hp.probe_delta();
             const chunk = &itemIter.to_chunk()[0];
@@ -594,8 +594,7 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
                     src_idx += 1;
                 }
             } else {
-                var stack_buf: [256]u8 = undefined;
-                @memset(&stack_buf, 0);
+                var stack_buf = [_]u8{0} ** 256;
                 var fullness: [*]u8 = &stack_buf;
 
                 if (new_cap.chunk_count > 256) {
@@ -735,8 +734,9 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
 
             var index = hp.hash;
             var chunk = &self.chunk_ptr[index & self.chunk_mask];
+            const delta = hp.probe_delta();
+
             const idx = chunk.head.first_empty_idx() orelse blk: {
-                const delta = hp.probe_delta();
                 while (true) {
                     chunk.head.inc_overflow_count();
                     index += delta;
@@ -922,6 +922,21 @@ test {
 
         pub const min_iterations = 100;
         pub const max_iterations = 100;
+
+        pub fn fmap_insert(comptime item_type: type, ctx: benchCtx) void {
+            const itemType = getItemTypeKeyOnly(item_type);
+            const hasher = getHasher(itemType.keyType);
+            const fmapType = fmap(itemType, hasher);
+
+            ctx.timer.reset();
+            var map = fmapType.new(0, ctx.allocator) catch unreachable;
+            for (0..1_000_000) |idx| {
+                const item = itemType{ .key = idx };
+                map.insert(&item, ctx.allocator) catch unreachable;
+            }
+            ctx.runtime.* = ctx.timer.read();
+            defer map.deinit(ctx.allocator);
+        }
 
         pub fn fmap_search(comptime item_type: type, ctx: benchCtx) u64 {
             const itemType = getItemTypeKeyOnly(item_type);
