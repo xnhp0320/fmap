@@ -869,6 +869,14 @@ test "fmap a large insert and remove" {
     }
     try testing.expect(map.size == 1024);
 
+    for (0..map.chunk_count()) |idx| {
+        // make sure there is no overflow in overflow_count.
+        try testing.expect(map.chunk_ptr[idx].head.overflow_count() < 128);
+        if (idx != 0) {
+            try testing.expect(map.chunk_ptr[idx].head.get_scale() == 0);
+        }
+    }
+
     for (0..1024) |idx| {
         const item = itemType{ .key = idx };
         var iter = map.find(&item);
@@ -881,6 +889,14 @@ test "fmap a large insert and remove" {
         }
     }
     try testing.expect(map.size == 0);
+
+    for (0..map.chunk_count()) |idx| {
+        // make sure there is no overflow in overflow_count.
+        try testing.expect(map.chunk_ptr[idx].head.overflow_count() < 128);
+        if (idx != 0) {
+            try testing.expect(map.chunk_ptr[idx].head.get_scale() == 0);
+        }
+    }
 
     map.deinit(allocator);
 
