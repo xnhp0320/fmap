@@ -669,7 +669,7 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
 
             while (tries <= self.chunk_mask) : (tries += 1) {
                 const chunk = &self.chunk_ptr[index & self.chunk_mask];
-                if (prefetch) {
+                if (prefetch and (@sizeOf(chunk_type) > 64)) {
                     @prefetch(&chunk.items, .{});
                 }
 
@@ -902,4 +902,48 @@ test "fmap a large insert and remove" {
 
     const status = gpa.deinit();
     try testing.expect(status != .leak);
+}
+
+const bench = @import("bench.zig");
+const benchCtx = bench.benchCtx;
+
+test {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+
+    try bench.benchmark(struct {
+        pub const args = [_]type{
+            u64,
+        };
+
+        pub const arg_names = [_][]const u8{
+            "fmap_u64",
+        };
+
+        pub const min_iterations = 100;
+        pub const max_iterations = 100;
+
+        pub fn fmap_search(comptime item_type: type, ctx: benchCtx) u64 {
+            const itemType = getItemTypeKeyOnly(item_type);
+            const hasher = getHasher(itemType.keyType);
+            const fmapType = fmap(itemType, hasher);
+
+            var map = fmapType.new(1_000_000, ctx.allocator) catch unreachable;
+            for (0..1_000_000) |idx| {
+                const item = itemType{ .key = idx };
+                map.insert(&item, ctx.allocator) catch unreachable;
+            }
+            defer map.deinit(ctx.allocator);
+
+            ctx.timer.reset();
+            var sum: u64 = 0;
+            for (0..1_000_000) |idx| {
+                const item = itemType{ .key = idx };
+                var iter = map.find(&item);
+                sum += iter.item.?[0].key;
+            }
+            ctx.runtime.* = ctx.timer.read();
+            return sum;
+        }
+    }, allocator);
 }
