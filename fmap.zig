@@ -29,11 +29,11 @@ const fmap_chunk_head = extern struct {
     }
 
     fn mark_eof(h: *Self, scale: u32) void {
-        h.control = ((h.control & ~@intCast(u8, 0x0f) | @intCast(u8, scale)));
+        h.control = ((h.control & ~@as(u8, 0x0f) | @as(u8, @intCast(scale))));
     }
 
     fn get_scale(h: Self) u32 {
-        return @intCast(u32, (h.control & 0x0f));
+        return @intCast((h.control & 0x0f));
     }
 
     fn idx_used(h: Self, idx: usize) bool {
@@ -41,15 +41,15 @@ const fmap_chunk_head = extern struct {
     }
 
     fn set_tag(h: *Self, idx: usize, tag: u32) void {
-        h.tags[idx] = @intCast(u8, tag);
+        h.tags[idx] = @intCast(tag);
     }
 
     fn clear_tag(h: *Self, idx: usize) void {
-        h.tags[idx] = @intCast(u8, 0);
+        h.tags[idx] = @intCast(0);
     }
 
     fn hosted_overflow_count(h: Self) u32 {
-        return @intCast(u32, h.control >> 4);
+        return @intCast(h.control >> 4);
     }
 
     fn adj_hosted_overflow_count(h: *Self, hostedOp: u8) void {
@@ -71,16 +71,16 @@ const fmap_chunk_head = extern struct {
     }
 
     fn get_tag(h: Self, idx: usize) u32 {
-        return @intCast(u32, h.tags[idx]);
+        return @intCast(h.tags[idx]);
     }
 
     fn tag_vector(h: Self) @Vector(16, u8) {
-        return @bitCast(@Vector(16, u8), h);
+        return @bitCast(h);
     }
 
     fn occupied_mask(h: Self) u16 {
         const v = h.tag_vector();
-        const mask = @bitCast(u16, (v != @splat(16, @intCast(u8, 0))));
+        const mask = @as(u16, @bitCast((v != @splat(16, @as(u8, @intCast(0))))));
         return mask & FULL_MASK;
     }
 
@@ -92,7 +92,7 @@ const fmap_chunk_head = extern struct {
         var mask = h.occupied_mask();
         if (mask == 0)
             return null;
-        return @intCast(u16, last_set_idx_nonzero(mask)) - 1;
+        return @as(u16, @intCast(last_set_idx_nonzero(mask))) - 1;
     }
 
     fn first_empty_idx(h: Self) ?u16 {
@@ -120,7 +120,7 @@ test {
     var h = fmap_chunk_head.new();
     try testing.expect(@TypeOf(h) == fmap_chunk_head);
     var v0 = h.tag_vector();
-    var v1 = @splat(16, @intCast(u8, 0));
+    var v1 = @splat(16, @as(u8, @intCast(0)));
     try testing.expect(@reduce(.And, (v0 == v1)) == true);
 }
 
@@ -172,8 +172,8 @@ const dense_iter = struct {
             const s = @ctz(iter.mask);
             const idx = iter.index + s;
             const mask: u32 = iter.mask;
-            iter.mask = @intCast(u16, mask >> (s + 1));
-            iter.index = @intCast(u16, idx + 1);
+            iter.mask = @intCast(mask >> (s + 1));
+            iter.index = @intCast(idx + 1);
             return idx;
         }
     }
@@ -225,7 +225,7 @@ const match_iter = struct {
     fn new(h: fmap_chunk_head, needle: u8) self {
         const v = h.tag_vector();
         const needle_v = @splat(16, needle);
-        const result = @bitCast(u16, v == needle_v);
+        const result:u16 = @bitCast(v == needle_v);
         return .{ .mask = result };
     }
 
@@ -290,14 +290,14 @@ fn item_iter(comptime item_type: type) type {
         const iter_type = @This();
 
         fn new(chunk: *chunk_type, index: usize) iter_type {
-            return .{ .item = @ptrCast([*]item_type, &chunk.items[index]), .index = index };
+            return .{ .item = @ptrCast(&chunk.items[index]), .index = index };
         }
 
         fn to_chunk(iter: iter_type) [*]chunk_type {
             var item = iter.item.?;
             item -= iter.index;
-            const addr = @fieldParentPtr(chunk_type, "items", @ptrCast(*[14]item_type, item));
-            return @ptrCast([*]chunk_type, addr);
+            const addr = @fieldParentPtr(chunk_type, "items", @as(*[14]item_type, @ptrCast(item)));
+            return @ptrCast(addr);
         }
 
         fn at_end(iter: iter_type) bool {
@@ -329,7 +329,7 @@ fn item_iter(comptime item_type: type) type {
                 }
 
                 if (h.last_occupied_idx()) |idx| {
-                    self.item = @ptrCast([*]item_type, &chunk[0].items[idx]);
+                    self.item = @ptrCast(&chunk[0].items[idx]);
                     self.index = idx;
                     return;
                 }
@@ -350,7 +350,7 @@ test {
     const chunk_type = fmap_chunk(u64);
     var chunk = chunk_type.new();
     var iter = item_iter(u64).new(&chunk, 2);
-    try testing.expect(@ptrCast([*]chunk_type, &chunk) == iter.to_chunk());
+    try testing.expect(@as([*]chunk_type, @ptrCast(&chunk)) == iter.to_chunk());
 }
 
 test {
@@ -412,7 +412,7 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
         const Self = @This();
 
         fn is_empty(self: *Self) bool {
-            return self.chunk_ptr == @ptrCast(chunk_ptr_type, &S.empty_chunk);
+            return self.chunk_ptr == @as(chunk_ptr_type, @ptrCast(&S.empty_chunk));
         }
 
         fn chunk_count(self: *Self) u32 {
@@ -421,7 +421,7 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
 
         fn resetAndShrink(self: *Self, allocator: Allocator) void {
             const orig_chunk = self.chunk_ptr[0..self.chunk_count()];
-            self.chunk_ptr = @ptrCast(chunk_ptr_type, &S.empty_chunk);
+            self.chunk_ptr = @ptrCast(&S.empty_chunk);
             self.size = 0;
             self.chunk_mask = 0;
 
@@ -460,7 +460,7 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
         }
 
         fn new(cap: usize, allocator: Allocator) !Self {
-            var map = Self{ .chunk_ptr = @ptrCast(chunk_ptr_type, &S.empty_chunk), .chunk_mask = 0, .size = 0, .flags = 0 };
+            var map = Self{ .chunk_ptr = @ptrCast(&S.empty_chunk), .chunk_mask = 0, .size = 0, .flags = 0 };
             if (cap == 0)
                 return map;
 
@@ -479,9 +479,9 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
 
         fn compute(desired: u32) fmap_cap {
             const minChunks = (desired - 1) / DESIRED_CAP + 1;
-            const chunkPow = @intCast(u5, find_last_set(minChunks - 1));
+            const chunkPow: u5 = @intCast(find_last_set(minChunks - 1));
 
-            return .{ .chunk_count = @intCast(u32, 1) << chunkPow, .scale = DESIRED_CAP };
+            return .{ .chunk_count = @as(u32, 1) << chunkPow, .scale = DESIRED_CAP };
         }
 
         fn init_chunks(chunks: []chunk_type, cap: fmap_cap) chunk_ptr_type {
@@ -495,8 +495,8 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
             return chunks.ptr;
         }
 
-        const HOSTED_OVERFLOW_INC = @intCast(u8, 0x10);
-        const HOSTED_OVERFLOW_DEC = @bitCast(u8, @as(i8, -0x10));
+        const HOSTED_OVERFLOW_INC:u8 = @intCast(0x10);
+        const HOSTED_OVERFLOW_DEC:u8 = @bitCast(@as(i8, -0x10));
 
         fn alloc_tag(self: *Self, fullness: [*]u8, hp: hash_pair) *item_type {
             var index = hp.hash;
@@ -636,7 +636,7 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
         }
 
         fn reserve(self: *Self, cap: usize, allocator: Allocator) !void {
-            const desired = @intCast(u32, @max(self.size, cap));
+            const desired:u32 = @intCast(@max(self.size, cap));
             if (desired == 0) {
                 self.reset(allocator, true);
                 return;
@@ -672,7 +672,7 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
                     @prefetch(&chunk.items, .{});
                 }
 
-                var iter = match_iter.new(chunk.head, @intCast(u8, hp.tag));
+                var iter = match_iter.new(chunk.head, @intCast(hp.tag));
                 while (iter.next()) |idx| {
                     if (item.keyEql(&chunk.items[idx])) {
                         return item_iter_type.new(chunk, idx);
@@ -761,7 +761,7 @@ fn getHasher(comptime K: type) type {
     return struct {
         fn hash(key: K) hash_pair {
             const hv = std.hash.Wyhash.hash(0, std.mem.asBytes(&key));
-            return hash_pair.from_hash(@truncate(u32, hv));
+            return hash_pair.from_hash(@truncate(hv));
         }
     };
 }

@@ -117,12 +117,12 @@ pub fn benchmark(comptime B: type, allocator: Allocator) !void {
                 }
             }
 
-            const runtime_mean = @intCast(u64, runtime_sum / i);
+            const runtime_mean:u64 = @intCast(runtime_sum / i);
 
             var d_sq_sum: u128 = 0;
             for (runtimes[0..i]) |runtime| {
-                const d = @intCast(i64, @intCast(i128, runtime) - runtime_mean);
-                d_sq_sum += @intCast(u64, d * d);
+                const d: i64 = @intCast(@as(i128, runtime) - runtime_mean);
+                d_sq_sum += @intCast(d * d);
             }
             const variance = d_sq_sum / i;
 
