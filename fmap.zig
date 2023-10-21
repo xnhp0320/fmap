@@ -80,7 +80,7 @@ const fmap_chunk_head = extern struct {
 
     fn occupied_mask(h: Self) u16 {
         const v = h.tag_vector();
-        const mask = @as(u16, @bitCast((v != @splat(16, @as(u8, @intCast(0))))));
+        const mask = @as(u16, @bitCast((v != @as(@Vector(16, u8), @splat(@intCast(0))))));
         return mask & FULL_MASK;
     }
 
@@ -120,7 +120,7 @@ test {
     var h = fmap_chunk_head.new();
     try testing.expect(@TypeOf(h) == fmap_chunk_head);
     var v0 = h.tag_vector();
-    var v1 = @splat(16, @as(u8, @intCast(0)));
+    var v1: @Vector(16, u8) = @splat(@intCast(0));
     try testing.expect(@reduce(.And, (v0 == v1)) == true);
 }
 
@@ -224,8 +224,8 @@ const match_iter = struct {
 
     fn new(h: fmap_chunk_head, needle: u8) self {
         const v = h.tag_vector();
-        const needle_v = @splat(16, needle);
-        const result:u16 = @bitCast(v == needle_v);
+        const needle_v: @Vector(16, u8) = @splat(needle);
+        const result: u16 = @bitCast(v == needle_v);
         return .{ .mask = result };
     }
 
@@ -495,8 +495,8 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
             return chunks.ptr;
         }
 
-        const HOSTED_OVERFLOW_INC:u8 = @intCast(0x10);
-        const HOSTED_OVERFLOW_DEC:u8 = @bitCast(@as(i8, -0x10));
+        const HOSTED_OVERFLOW_INC: u8 = @intCast(0x10);
+        const HOSTED_OVERFLOW_DEC: u8 = @bitCast(@as(i8, -0x10));
 
         fn alloc_tag(self: *Self, fullness: [*]u8, hp: hash_pair) *item_type {
             var index = hp.hash;
@@ -636,7 +636,7 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
         }
 
         fn reserve(self: *Self, cap: usize, allocator: Allocator) !void {
-            const desired:u32 = @intCast(@max(self.size, cap));
+            const desired: u32 = @intCast(@max(self.size, cap));
             if (desired == 0) {
                 self.reset(allocator, true);
                 return;

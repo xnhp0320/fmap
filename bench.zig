@@ -26,8 +26,6 @@ pub fn benchmark(comptime B: type, allocator: Allocator) !void {
     const functions = comptime blk: {
         var res: []const Decl = &[_]Decl{};
         for (meta.declarations(B)) |decl| {
-            if (!decl.is_pub)
-                continue;
             if (@typeInfo(@TypeOf(@field(B, decl.name))) != .Fn)
                 continue;
             res = res ++ [_]Decl{decl};
@@ -117,7 +115,7 @@ pub fn benchmark(comptime B: type, allocator: Allocator) !void {
                 }
             }
 
-            const runtime_mean:u64 = @intCast(runtime_sum / i);
+            const runtime_mean: u64 = @intCast(runtime_sum / i);
 
             var d_sq_sum: u128 = 0;
             for (runtimes[0..i]) |runtime| {
@@ -282,7 +280,7 @@ test "benchmark generics" {
         pub fn sum_vectors(comptime T: type, ctx: benchCtx) T {
             ctx.timer.reset();
             const info = @typeInfo(T).Vector;
-            const one = @splat(info.len, @as(info.child, 1));
+            const one: @Vector(info.len, info.child) = @splat(1);
             const vecs = [1]T{one} ** 512;
 
             var res = one;
