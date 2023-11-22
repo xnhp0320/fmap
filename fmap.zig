@@ -89,14 +89,14 @@ const fmap_chunk_head = extern struct {
     }
 
     fn last_occupied_idx(h: Self) ?u16 {
-        var mask = h.occupied_mask();
+        const mask = h.occupied_mask();
         if (mask == 0)
             return null;
         return @as(u16, @intCast(last_set_idx_nonzero(mask))) - 1;
     }
 
     fn first_empty_idx(h: Self) ?u16 {
-        var mask = h.occupied_mask() ^ FULL_MASK;
+        const mask = h.occupied_mask() ^ FULL_MASK;
         if (mask == 0)
             return null;
         return @ctz(mask);
@@ -119,8 +119,8 @@ fn fmap_chunk(comptime item_type: type) type {
 test {
     var h = fmap_chunk_head.new();
     try testing.expect(@TypeOf(h) == fmap_chunk_head);
-    var v0 = h.tag_vector();
-    var v1: @Vector(16, u8) = @splat(@intCast(0));
+    const v0 = h.tag_vector();
+    const v1: @Vector(16, u8) = @splat(@intCast(0));
     try testing.expect(@reduce(.And, (v0 == v1)) == true);
 }
 
@@ -237,7 +237,7 @@ const match_iter = struct {
         if (!iter.has_next())
             return null;
 
-        var idx = @ctz(iter.mask);
+        const idx = @ctz(iter.mask);
         iter.mask &= (iter.mask - 1);
         return idx;
     }
@@ -598,7 +598,7 @@ fn fmap(comptime item_type: type, comptime hasher: type) type {
                 var fullness: [*]u8 = &stack_buf;
 
                 if (new_cap.chunk_count > 256) {
-                    var mem = try allocator.alloc(u8, new_cap.chunk_count);
+                    const mem = try allocator.alloc(u8, new_cap.chunk_count);
                     @memset(mem, 0);
                     fullness = mem.ptr;
                 }
@@ -954,7 +954,7 @@ test {
             var sum: u64 = 0;
             for (0..1_000_000) |idx| {
                 const item = itemType{ .key = idx };
-                var iter = map.find(&item);
+                const iter = map.find(&item);
                 sum += iter.item.?[0].key;
             }
             ctx.runtime.* = ctx.timer.read();
